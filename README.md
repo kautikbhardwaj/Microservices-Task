@@ -1,148 +1,311 @@
-# Microservices Docker Deployment
+﻿# Skill Test 2 â€” Microservices Deployment on Kubernetes (Minikube)
 
-Four Node.js microservices containerized with Docker and orchestrated via Docker Compose.
+Deployment of four Node.js microservices on Minikube with ClusterIP service discovery, health probes, resource limits, and an optional Ingress layer.
 
-| Service          | Port | Entry Point | Container Name   |
-|------------------|------|-------------|------------------|
-| User Service     | 3000 | app.js      | user-service     |
-| Product Service  | 3001 | app.js      | product-service  |
-| Order Service    | 3002 | app.js      | order-service    |
-| Gateway Service  | 3003 | app.js      | gateway-service  |
+**Repository:** https://github.com/kautikbhardwaj/Microservices-Task
+**Author:** Kautik Bhardwaj (bhardwajkautik@gmail.com)
 
 ---
 
-## Prerequisites
+## 1. Architecture
 
-- [Docker](https://docs.docker.com/get-docker/) (v20+)
-- [Docker Compose](https://docs.docker.com/compose/install/) (v2+)
+| Service | Container Port | K8s Service Name | Service Type | Endpoints |
+|---|---|---|---|---|
+| User Service | 3000 | `user-service` | ClusterIP | `/health`, `/users` |
+| Product Service | 3001 | `product-service` | ClusterIP | `/health`, `/products` |
+| Order Service | 3002 | `order-service` | ClusterIP | `/health`, `/orders` (GET, POST) |
+| Gateway Service | 3003 | `gateway-service` | NodePort (30003) | `/health`, `/api/users`, `/api/products`, `/api/orders` |
 
-```bash
-docker --version
-docker compose version
+Gateway calls backends by DNS name inside the cluster:
+
+```
+gateway-service  â”€â”€â–º  http://user-service:3000/users
+                 â”€â”€â–º  http://product-service:3001/products
+                 â”€â”€â–º  http://order-service:3002/orders
 ```
 
+Service names in `services/*.yaml` intentionally match the hostnames hardcoded in `gateway-service/app.js`, so CoreDNS resolves them without code changes.
+
 ---
 
-## Project Structure
+## 2. Repository / Submission Structure
 
 ```
 submission/
-├── user-service/
-│   ├── Dockerfile
-│   ├── app.js
-│   └── package.json
-├── product-service/
-│   ├── Dockerfile
-│   ├── app.js
-│   └── package.json
-├── order-service/
-│   ├── Dockerfile
-│   ├── app.js
-│   └── package.json
-├── gateway-service/
-│   ├── Dockerfile
-│   ├── app.js
-│   └── package.json
-├── docker-compose.yml
-└── README.md
+â”œâ”€â”€ deployments/
+â”‚   â”œâ”€â”€ user-service.yaml
+â”‚   â”œâ”€â”€ product-service.yaml
+â”‚   â”œâ”€â”€ order-service.yaml
+â”‚   â””â”€â”€ gateway-service.yaml
+â”œâ”€â”€ services/
+â”‚   â”œâ”€â”€ user-service.yaml
+â”‚   â”œâ”€â”€ product-service.yaml
+â”‚   â”œâ”€â”€ order-service.yaml
+â”‚   â””â”€â”€ gateway-service.yaml
+â”œâ”€â”€ ingress/
+â”‚   â””â”€â”€ ingress.yaml
+â”œâ”€â”€ screenshots/
+â”‚   â”œâ”€â”€ pods.png
+â”‚   â”œâ”€â”€ logs.png
+â”‚   â””â”€â”€ service-test.png
+â””â”€â”€ README.md
 ```
 
 ---
 
-## Setup & Run
+## 3. Prerequisites
+
+* Docker Desktop / Docker Engine
+* Minikube â‰¥ 1.32
+* kubectl â‰¥ 1.28
+* Source code of the four services (cloned from the repository above)
+
+---
+
+## 4. Minikube Setup
 
 ```bash
-# 1. Build and start all services
-docker compose up --build
-
-# 2. Run in background (detached)
-docker compose up --build -d
-
-# 3. Stop all services
-docker compose down
+minikube start --driver=docker --cpus=2 --memory=4096
+minikube status
+kubectl config use-context minikube
+kubectl get nodes
 ```
 
 ---
 
-## Testing Each Service
+## 5. Build the Images
 
-### Health Checks
+The manifests use `imagePullPolicy: IfNotPresent`, so images built directly inside Minikube's Docker daemon are used without any registry.
+
 ```bash
-curl http://localhost:3000/health   # User Service
-curl http://localhost:3001/health   # Product Service
-curl http://localhost:3002/health   # Order Service
-curl http://localhost:3003/health   # Gateway Service
+# Point the local Docker CLI at Minikube's Docker daemon
+eval $(minikube docker-env)          # Linux / macOS
+# minikube docker-env | Invoke-Expression   # Windows PowerShell
+
+cd Microservices-Task
+
+docker build -t kautikbhardwaj/user-service:v1     ./user-service
+docker build -t kautikbhardwaj/product-service:v1  ./product-service
+docker build -t kautikbhardwaj/order-service:v1    ./order-service
+docker build -t kautikbhardwaj/gateway-service:v1  ./gateway-service
+
+docker images | grep kautikbhardwaj
 ```
 
-### Direct Service Endpoints
+<details>
+<summary>Alternative: pull from Docker Hub instead of building locally</summary>
+
 ```bash
-curl http://localhost:3000/users      # Get all users
-curl http://localhost:3001/products   # Get all products
-curl http://localhost:3002/orders     # Get all orders
+docker login
+docker push kautikbhardwaj/user-service:v1
+docker push kautikbhardwaj/product-service:v1
+docker push kautikbhardwaj/order-service:v1
+docker push kautikbhardwaj/gateway-service:v1
+```
+The image references in the manifests stay the same.
+</details>
+
+---
+
+## 6. Deploy
+
+```bash
+cd submission
+
+# Services first, so DNS records exist before the gateway starts
+kubectl apply -f services/
+kubectl apply -f deployments/
+
+# Or apply everything recursively
+kubectl apply -f . --recursive
 ```
 
-### Via Gateway (port 3003)
-```bash
-curl http://localhost:3003/api/users      # Proxied → user-service
-curl http://localhost:3003/api/products   # Proxied → product-service
-curl http://localhost:3003/api/orders     # Proxied → order-service
+Verify:
 
-# Create an order via gateway
+```bash
+kubectl get pods -o wide
+kubectl get svc
+kubectl get deployments
+kubectl rollout status deployment/gateway-service
+```
+
+Expected: 8 pods (2 replicas Ã— 4 services) in `Running` / `READY 1/1`.
+
+---
+
+## 7. Testing Service Communication
+
+### 7.1 Port-forward the gateway
+
+```bash
+kubectl port-forward svc/gateway-service 3003:3003
+```
+
+In a second terminal:
+
+```bash
+curl http://localhost:3003/health
+curl http://localhost:3003/api/users
+curl http://localhost:3003/api/products
+curl http://localhost:3003/api/orders
+
 curl -X POST http://localhost:3003/api/orders \
   -H "Content-Type: application/json" \
-  -d '{"userId": 1, "productId": 2}'
+  -d '{"userId":1,"productId":2}'
 ```
 
-### Check running containers
+### 7.2 NodePort access
+
 ```bash
-docker compose ps
+minikube service gateway-service --url
+curl $(minikube service gateway-service --url)/api/products
 ```
 
-### View logs
+### 7.3 In-cluster DNS test (proves ClusterIP discovery)
+
 ```bash
-docker compose logs -f                   # All services
-docker compose logs -f gateway-service   # Single service
+kubectl run curl-test --image=curlimages/curl:8.5.0 -it --rm --restart=Never -- sh
+
+# inside the pod:
+curl http://user-service:3000/users
+curl http://product-service:3001/products
+curl http://order-service:3002/orders
+curl http://gateway-service:3003/api/users
+exit
+```
+
+### 7.4 Logs showing inter-service communication
+
+```bash
+kubectl logs -l app=gateway-service --tail=50
+kubectl logs -l app=user-service --tail=50
+kubectl logs deployment/gateway-service -c wait-for-backends
+```
+
+### 7.5 Individual service port-forwards
+
+```bash
+kubectl port-forward svc/user-service 3000:3000
+kubectl port-forward svc/product-service 3001:3001
+kubectl port-forward svc/order-service 3002:3002
 ```
 
 ---
 
-## Inter-Service Communication
+## 8. Bonus â€” Ingress
 
-Services communicate over `microservices-network` bridge network using container names as hostnames:
+```bash
+minikube addons enable ingress
+kubectl get pods -n ingress-nginx
 
-| Gateway Route      | Internal URL                          |
-|--------------------|---------------------------------------|
-| `/api/users`       | `http://user-service:3000/users`      |
-| `/api/products`    | `http://product-service:3001/products`|
-| `/api/orders`      | `http://order-service:3002/orders`    |
+kubectl apply -f ingress/ingress.yaml
+kubectl get ingress
+```
+
+Map the host:
+
+```bash
+echo "$(minikube ip) microservices.local" | sudo tee -a /etc/hosts
+# Windows: add "<minikube ip> microservices.local" to C:\Windows\System32\drivers\etc\hosts
+```
+
+Test the routes:
+
+```bash
+curl http://microservices.local/api/users      # â†’ user-service /users
+curl http://microservices.local/api/products   # â†’ product-service /products
+curl http://microservices.local/api/orders     # â†’ order-service /orders
+curl http://microservices.local/health         # â†’ gateway-service /health
+```
+
+Each path rule uses its own `nginx.ingress.kubernetes.io/rewrite-target` annotation, because the backend services expose `/users`, `/products` and `/orders` â€” not `/api/...`.
+
+If `minikube tunnel` is needed (Docker driver on macOS/Windows):
+
+```bash
+minikube tunnel
+curl -H "Host: microservices.local" http://127.0.0.1/api/users
+```
 
 ---
 
-## Troubleshooting
+## 9. Screenshots
 
-### Port already in use
+| File | Command captured |
+|---|---|
+| `screenshots/pods.png` | `kubectl get pods -o wide` + `kubectl get svc` |
+| `screenshots/logs.png` | `kubectl logs -l app=gateway-service` showing backend calls |
+| `screenshots/service-test.png` | `kubectl port-forward` + `curl` responses from `/api/users`, `/api/products`, `/api/orders` |
+
+---
+
+## 10. Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `ErrImagePull` / `ImagePullBackOff` | Image not present in Minikube's Docker daemon | Run `eval $(minikube docker-env)` **before** `docker build`, then `kubectl rollout restart deployment/<name>` |
+| Pod stuck in `Init:0/1` | Backend services not reachable yet | `kubectl get svc` â€” confirm `user-service`, `product-service`, `order-service` exist with the exact names |
+| Gateway returns `{"error":"Error fetching users"}` | DNS name or port mismatch | Service `metadata.name` must be `user-service`/`product-service`/`order-service`; ports 3000/3001/3002 |
+| `CrashLoopBackOff` | App crashed on start | `kubectl logs <pod> --previous`, `kubectl describe pod <pod>` |
+| Readiness probe failing | Wrong path/port | Probes must hit `/health` on the container port; check `kubectl describe pod <pod>` events |
+| `0/1 nodes available: insufficient memory` | Limits too high for the Minikube VM | `minikube start --memory=4096` or lower `resources.limits` |
+| Port-forward drops connection | Pod restarted | Re-run the `kubectl port-forward` command |
+| Ingress returns 404 | Addon not ready or host not mapped | `kubectl get pods -n ingress-nginx`, verify `/etc/hosts` entry, use `-H "Host: microservices.local"` |
+| `connection refused` on NodePort | Wrong IP | Use `minikube service gateway-service --url` instead of `localhost` |
+
+Useful diagnostics:
+
 ```bash
-# Check what's using the port
-netstat -ano | findstr :3000        # Windows
-lsof -i :3000                       # Mac/Linux
-
-# Change host port in docker-compose.yml
-ports:
-  - "4000:3000"   # host:container
+kubectl describe pod <pod-name>
+kubectl get events --sort-by=.lastTimestamp
+kubectl get endpoints
+kubectl exec -it <gateway-pod> -- wget -qO- http://user-service:3000/users
 ```
 
-### Container exits immediately
+---
+
+## 11. Cleanup
+
 ```bash
-docker compose logs <service-name>
+kubectl delete -f ingress/ingress.yaml
+kubectl delete -f deployments/
+kubectl delete -f services/
+minikube stop
+# minikube delete
 ```
 
-### Rebuild after changes
-```bash
-docker compose up --build
+---
+
+## 12. Notes from the actual run
+
+### order-service replicas
+order-service stores orders in an in-memory array, so it runs with 1 replica. With 2 replicas the ClusterIP load-balances POST and GET to different pods and a created order appears missing. user-service, product-service and gateway-service are stateless and run 2 replicas each. Scaling order-service horizontally requires an external datastore.
+
+### Ingress on Windows (Docker driver)
+With the Docker driver on Windows the ingress controller is not reachable at the address shown by kubectl get ingress. Run minikube tunnel in an Administrator PowerShell and map 127.0.0.1 microservices.local in C:\Windows\System32\drivers\etc\hosts.
+
+### PowerShell curl quoting
+PowerShell mangles inline JSON. Use the stop-parsing token:
+
+```powershell
+curl.exe --% -X POST http://localhost:3003/api/orders -H "Content-Type: application/json" -d "{\"userId\":1,\"productId\":2}"
 ```
 
-### Clean reset
-```bash
-docker compose down -v --remove-orphans
-docker compose up --build
-```
+---
+
+## 12. Notes from the actual run
+
+### order-service replicas
+order-service stores orders in an in-memory array, so it runs with 1 replica. With 2 replicas the ClusterIP load-balances POST and GET to different pods and a created order appears missing. user-service, product-service and gateway-service are stateless and run 2 replicas each. Scaling order-service horizontally requires an external datastore.
+
+### Ingress on Windows (Docker driver)
+With the Docker driver on Windows the ingress controller is not reachable at the ADDRESS shown by kubectl get ingress. Run 'minikube tunnel' in an Administrator PowerShell and add '127.0.0.1 microservices.local' to C:\Windows\System32\drivers\etc\hosts.
+
+### PowerShell curl quoting
+PowerShell mangles inline JSON bodies. Use the stop-parsing token --% before the curl.exe arguments when sending POST requests.
+
+### Screenshots captured
+- pods.png : kubectl get pods -o wide and kubectl get svc
+- logs.png : init container output, gateway logs, and in-cluster DNS calls to all three backends
+- service-test.png : port-forward + curl on all gateway routes including POST
+- ingress.png : all four ingress routes via microservices.local
